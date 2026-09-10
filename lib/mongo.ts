@@ -1,53 +1,57 @@
 import { MongoClient, ServerApiVersion, type MongoClientOptions } from "mongodb"
 
-const uri = process.env.MONGO_DB_URI
+// La conexion se crea de forma perezosa: recien cuando alguien hace
+// `await clientPromise`. Antes el modulo leia MONGO_DB_URI y lanzaba al
+// importarse, lo que hacia fallar `next build` cuando la variable no estaba
+// definida en el entorno de compilacion (por ejemplo, en Vercel).
 
-if (!uri) {
-  throw new Error("Please define the MONGODB_URI environment variable inside .env.local")
-}
-
-// Definir las opciones con tipo
 const options: MongoClientOptions = {
   serverApi: {
     version: ServerApiVersion.v1,
     strict: true,
     deprecationErrors: true,
   },
-  // Asegúrate de que estas opciones sean adecuadas para tu caso de uso
-  // Puedes necesitar ajustar `maxPoolSize`, `wtimeoutMS`, etc.
-  // Consulta la documentación: https://mongodb.github.io/node-mongodb-native/4.9/interfaces/MongoClientOptions.html
 }
 
-let client: MongoClient
-let clientPromise: Promise<MongoClient>
-
-// Definir un tipo para la propiedad global para evitar errores de TS
+// En desarrollo se guarda en una global para sobrevivir a los recargos de HMR.
 declare global {
   // eslint-disable-next-line no-var
   var _mongoClientPromise: Promise<MongoClient> | undefined
 }
 
-if (process.env.NODE_ENV === "development") {
-  // En modo desarrollo, usa una variable global para preservar el valor
-  // a través de recargas de módulos causadas por HMR (Hot Module Replacement).
-  if (!global._mongoClientPromise) {
-    client = new MongoClient(uri, options)
-    global._mongoClientPromise = client.connect()
-    console.log("MongoDB Connection Initialized (Development)") // Log para confirmar inicialización
+let cached: Promise<MongoClient> | undefined
+
+function connect(): Promise<MongoClient> {
+  const uri = process.env.MONGO_DB_URI
+
+  if (!uri) {
+    return Promise.reject(
+      new Error(
+        "Falta la variable de entorno MONGO_DB_URI. Definila en .env.local para desarrollo local, " +
+          "o en Environment Variables del proyecto si corre en Vercel."
+      )
+    )
   }
-  clientPromise = global._mongoClientPromise
-} else {
-  // En producción, es mejor no usar una variable global.
-  client = new MongoClient(uri, options)
-  clientPromise = client.connect()
-  console.log("MongoDB Connection Initialized (Production)") // Log para confirmar inicialización
+
+  if (process.env.NODE_ENV === "development") {
+    if (!global._mongoClientPromise) {
+      global._mongoClientPromise = new MongoClient(uri, options).connect()
+    }
+    return global._mongoClientPromise
+  }
+
+  if (!cached) {
+    cached = new MongoClient(uri, options).connect()
+  }
+  return cached
 }
 
-// Exporta una promesa del cliente MongoClient. Al resolver esta promesa,
-// obtendrás el cliente MongoClient conectado.
-// Puedes usar esto en tus endpoints de API o funciones getServerSideProps.
-// Ejemplo: import clientPromise from '../lib/mongodb';
-//          const client = await clientPromise;
-//          const db = client.db("yourDbName");
-//          ... usar db ...
+// Thenable: se comporta como una promesa para quien haga `await`,
+// pero no abre la conexion hasta ese momento.
+const clientPromise: PromiseLike<MongoClient> = {
+  then(onfulfilled, onrejected) {
+    return connect().then(onfulfilled, onrejected)
+  },
+}
+
 export default clientPromise
